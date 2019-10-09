@@ -69,4 +69,4 @@ ENTRYPOINT ["/entrypoint.sh"]
 
 HEALTHCHECK CMD ["curl", "-f", "http://localhost:8088/health"]
 
-EXPOSE 8088
+EXPOSE 80 8080

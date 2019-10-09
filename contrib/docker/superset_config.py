@@ -46,6 +46,12 @@ SQLALCHEMY_DATABASE_URI = 'postgresql://%s:%s@%s:%s/%s' % (POSTGRES_USER,
 REDIS_HOST = get_env_variable('REDIS_HOST')
 REDIS_PORT = get_env_variable('REDIS_PORT')
 
+SUPERSET_WEBSERVER_ADDRESS = get_env_variable('WEBSERVER_ADDRESS')
+SUPERSET_WEBSERVER_PORT = get_env_variable('WEBSERVER_PORT')
+
+ENABLE_PROXY_FIX = True
+PROXY_FIX_CONFIG = {"x_for": 1, "x_proto": 1, "x_host": 1, "x_port": 0, "x_prefix": 1}
+
 
 class CeleryConfig(object):
     BROKER_URL = 'redis://%s:%s/0' % (REDIS_HOST, REDIS_PORT)
@@ -56,3 +62,23 @@ class CeleryConfig(object):
 
 
 CELERY_CONFIG = CeleryConfig
+
+
+class PrefixMiddleware(object):
+
+    def __init__(self, app):
+        self.app = app
+        self.prefix = os.environ['URL_PREFIX']
+
+    def __call__(self, environ, start_response):
+
+        if environ['PATH_INFO'].startswith(self.prefix):
+            environ['PATH_INFO'] = environ['PATH_INFO'][len(self.prefix):]
+            environ['SCRIPT_NAME'] = self.prefix
+            return self.app(environ, start_response)
+        else:
+            start_response('404', [('Content-Type', 'text/plain')])
+            return ["This url does not belong to the app.".encode()]
+
+
+ADDITIONAL_MIDDLEWARE = [PrefixMiddleware, ]

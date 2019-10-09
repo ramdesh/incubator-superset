@@ -37,10 +37,12 @@ services:
       - postgres:/var/lib/postgresql/data
 
   superset:
+    restart: unless-stopped
     build:
       context: ../../
       dockerfile: contrib/docker/Dockerfile
-    restart: unless-stopped
+    image: ramdesh/superset:latest
+    container_name: superset
     environment:
       POSTGRES_DB: superset
       POSTGRES_USER: superset
@@ -49,12 +51,14 @@ services:
       POSTGRES_PORT: 5432
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      WEBSERVER_ADDRESS: 172.16.238.14
+      WEBSERVER_PORT: 80
       # If using production, comment development volume below
       #SUPERSET_ENV: production
       SUPERSET_ENV: development
     user: root:root
     ports:
-      - 8088:8088
+      - 8088:80
     depends_on:
       - postgres
       - redis
