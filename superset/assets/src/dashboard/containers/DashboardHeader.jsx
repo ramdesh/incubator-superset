@@ -22,6 +22,8 @@ import { connect } from 'react-redux';
 import DashboardHeader from '../components/Header';
 import isDashboardLoading from '../util/isDashboardLoading';
 
+import { dashboardInfoChanged } from '../actions/dashboardInfo';
+
 import {
   setEditMode,
   showBuilderPane,
@@ -42,6 +44,7 @@ import {
   undoLayoutAction,
   redoLayoutAction,
   updateDashboardTitle,
+  dashboardTitleChanged,
 } from '../actions/dashboardLayout';
 
 import {
@@ -52,7 +55,6 @@ import {
 
 import { logEvent } from '../../logger/actions';
 import { DASHBOARD_HEADER_ID } from '../util/constants';
-import { getActiveFilters } from '../util/activeDashboardFilters';
 
 function mapStateToProps({
   dashboardLayout: undoableLayout,
@@ -65,7 +67,6 @@ function mapStateToProps({
     undoLength: undoableLayout.past.length,
     redoLength: undoableLayout.future.length,
     layout: undoableLayout.present,
-    filters: getActiveFilters(),
     dashboardTitle: (
       (undoableLayout.present[DASHBOARD_HEADER_ID] || {}).meta || {}
     ).text,
@@ -109,12 +110,11 @@ function mapDispatchToProps(dispatch) {
       maxUndoHistoryToast,
       logEvent,
       setRefreshFrequency,
+      dashboardInfoChanged,
+      dashboardTitleChanged,
     },
     dispatch,
   );
 }
 
-export default connect(
-  mapStateToProps,
-  mapDispatchToProps,
-)(DashboardHeader);
+export default connect(mapStateToProps, mapDispatchToProps)(DashboardHeader);

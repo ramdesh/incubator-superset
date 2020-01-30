@@ -14,27 +14,29 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-# pylint: disable=C,R,W
-from datetime import datetime
 import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib import parse
 
 from sqlalchemy import Column
-from sqlalchemy.engine import create_engine
 from sqlalchemy.engine.base import Engine
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.sql.expression import ColumnClause, Select
 from werkzeug.utils import secure_filename
 
-from superset import app, conf
+from superset import app, cache, conf
 from superset.db_engine_specs.base import BaseEngineSpec
 from superset.db_engine_specs.presto import PrestoEngineSpec
 from superset.utils import core as utils
+
+if TYPE_CHECKING:
+    # prevent circular imports
+    from superset.models.core import Database  # pylint: disable=unused-import
 
 QueryStatus = utils.QueryStatus
 config = app.config
@@ -81,9 +83,9 @@ class HiveEngineSpec(PrestoEngineSpec):
 
     @classmethod
     def get_all_datasource_names(
-        cls, db, datasource_type: str
+        cls, database, datasource_type: str
     ) -> List[utils.DatasourceName]:
-        return BaseEngineSpec.get_all_datasource_names(db, datasource_type)
+        return BaseEngineSpec.get_all_datasource_names(database, datasource_type)
 
     @classmethod
     def fetch_data(cls, cursor, limit: int) -> List[Tuple]:
@@ -99,7 +101,9 @@ class HiveEngineSpec(PrestoEngineSpec):
             return []
 
     @classmethod
-    def create_table_from_csv(cls, form, table):
+    def create_table_from_csv(  # pylint: disable=too-many-locals
+        cls, form, database
+    ) -> None:
         """Uploads a csv file and creates a superset datasource in Hive."""
 
         def convert_to_hive_type(col_type):
@@ -123,16 +127,16 @@ class HiveEngineSpec(PrestoEngineSpec):
         table_name = form.name.data
         schema_name = form.schema.data
 
-        if config.get("UPLOADED_CSV_HIVE_NAMESPACE"):
+        if config["UPLOADED_CSV_HIVE_NAMESPACE"]:
             if "." in table_name or schema_name:
                 raise Exception(
                     "You can't specify a namespace. "
                     "All tables will be uploaded to the `{}` namespace".format(
-                        config.get("HIVE_NAMESPACE")
+                        config["HIVE_NAMESPACE"]
                     )
                 )
             full_table_name = "{}.{}".format(
-                config.get("UPLOADED_CSV_HIVE_NAMESPACE"), table_name
+                config["UPLOADED_CSV_HIVE_NAMESPACE"], table_name
             )
         else:
             if "." in table_name and schema_name:
@@ -175,18 +179,17 @@ class HiveEngineSpec(PrestoEngineSpec):
             ROW FORMAT DELIMITED FIELDS TERMINATED BY ',' STORED AS
             TEXTFILE LOCATION '{location}'
             tblproperties ('skip.header.line.count'='1')"""
-        logging.info(form.con.data)
-        engine = create_engine(form.con.data.sqlalchemy_uri_decrypted)
+        engine = cls.get_engine(database)
         engine.execute(sql)
 
     @classmethod
-    def convert_dttm(cls, target_type: str, dttm: datetime) -> str:
+    def convert_dttm(cls, target_type: str, dttm: datetime) -> Optional[str]:
         tt = target_type.upper()
         if tt == "DATE":
-            return "CAST('{}' AS DATE)".format(dttm.isoformat()[:10])
+            return f"CAST('{dttm.date().isoformat()}' AS DATE)"
         elif tt == "TIMESTAMP":
-            return "CAST('{}' AS TIMESTAMP)".format(dttm.strftime("%Y-%m-%d %H:%M:%S"))
-        return "'{}'".format(dttm.strftime("%Y-%m-%d %H:%M:%S"))
+            return f"""CAST('{dttm.isoformat(sep=" ", timespec="microseconds")}' AS TIMESTAMP)"""  # pylint: disable=line-too-long
+        return None
 
     @classmethod
     def adjust_database_uri(cls, uri, selected_schema=None):
@@ -223,7 +226,7 @@ class HiveEngineSpec(PrestoEngineSpec):
                 reduce_progress = int(match.groupdict()["reduce_progress"])
                 stages[stage_number] = (map_progress + reduce_progress) / 2
         logging.info(
-            "Progress detail: {}, "
+            "Progress detail: {}, "  # pylint: disable=logging-format-interpolation
             "current job {}, "
             "total jobs: {}".format(stages, current_job, total_jobs)
         )
@@ -239,9 +242,10 @@ class HiveEngineSpec(PrestoEngineSpec):
         for line in log_lines:
             if lkp in line:
                 return line.split(lkp)[1]
+            return None
 
     @classmethod
-    def handle_cursor(cls, cursor, query, session):
+    def handle_cursor(cls, cursor, query, session):  # pylint: disable=too-many-locals
         """Updates progress information"""
         from pyhive import hive  # pylint: disable=no-name-in-module
 
@@ -302,33 +306,33 @@ class HiveEngineSpec(PrestoEngineSpec):
         return inspector.get_columns(table_name, schema)
 
     @classmethod
-    def where_latest_partition(
+    def where_latest_partition(  # pylint: disable=too-many-arguments
         cls,
         table_name: str,
         schema: Optional[str],
         database,
-        qry: Select,
+        query: Select,
         columns: Optional[List] = None,
     ) -> Optional[Select]:
         try:
             col_names, values = cls.latest_partition(
                 table_name, schema, database, show_first=True
             )
-        except Exception:
+        except Exception:  # pylint: disable=broad-except
             # table is not partitioned
             return None
         if values is not None and columns is not None:
             for col_name, value in zip(col_names, values):
-                for c in columns:
-                    if c.get("name") == col_name:
-                        qry = qry.where(Column(col_name) == value)
+                for clm in columns:
+                    if clm.get("name") == col_name:
+                        query = query.where(Column(col_name) == value)
 
-            return qry
+            return query
         return None
 
     @classmethod
     def _get_fields(cls, cols: List[dict]) -> List[ColumnClause]:
-        return BaseEngineSpec._get_fields(cols)
+        return BaseEngineSpec._get_fields(cols)  # pylint: disable=protected-access
 
     @classmethod
     def latest_sub_partition(cls, table_name, schema, database, **kwargs):
@@ -343,11 +347,13 @@ class HiveEngineSpec(PrestoEngineSpec):
         return None
 
     @classmethod
-    def _partition_query(cls, table_name, limit=0, order_by=None, filters=None):
+    def _partition_query(  # pylint: disable=too-many-arguments
+        cls, table_name, database, limit=0, order_by=None, filters=None
+    ):
         return f"SHOW PARTITIONS {table_name}"
 
     @classmethod
-    def select_star(
+    def select_star(  # pylint: disable=too-many-arguments
         cls,
         database,
         table_name: str,
@@ -374,7 +380,9 @@ class HiveEngineSpec(PrestoEngineSpec):
         )
 
     @classmethod
-    def modify_url_for_impersonation(cls, url, impersonate_user: bool, username: str):
+    def modify_url_for_impersonation(
+        cls, url, impersonate_user: bool, username: Optional[str]
+    ):
         """
         Modify the SQL Alchemy URL object with the user to impersonate if applicable.
         :param url: SQLAlchemy URL object
@@ -387,7 +395,7 @@ class HiveEngineSpec(PrestoEngineSpec):
 
     @classmethod
     def get_configuration_for_impersonation(
-        cls, uri: str, impersonate_user: bool, username: str
+        cls, uri: str, impersonate_user: bool, username: Optional[str]
     ) -> Dict[str, str]:
         """
         Return a configuration dictionary that can be merged with other configs
@@ -413,6 +421,20 @@ class HiveEngineSpec(PrestoEngineSpec):
         return configuration
 
     @staticmethod
-    def execute(cursor, query: str, async_: bool = False):
+    def execute(  # type: ignore
+        cursor, query: str, async_: bool = False
+    ):  # pylint: disable=arguments-differ
         kwargs = {"async": async_}
         cursor.execute(query, **kwargs)
+
+    @classmethod
+    @cache.memoize()
+    def get_function_names(cls, database: "Database") -> List[str]:
+        """
+        Get a list of function names that are able to be called on the database.
+        Used for SQL Lab autocomplete.
+
+        :param database: The database to get functions for
+        :return: A list of function names useable in the database
+        """
+        return database.get_df("SHOW FUNCTIONS")["tab_name"].tolist()
